@@ -66,10 +66,10 @@ pipeline {
                             bat 'kubectl cluster-info'
                             
                             echo "🔄 Atualizando tags das imagens no deployment..."
-                            // Substitui as imagens no YAML usando PowerShell
+                            // ✅ CORREÇÃO: Substitui o nome completo da imagem
                             bat """
-                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-frontend:v1.0.0', '${DOCKERHUB_REPO}/meu-frontend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
-                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
+                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'gasparottoluo/meu-frontend:v1.0.0', '${DOCKERHUB_REPO}/meu-frontend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
+                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'gasparottoluo/meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
                             """
                             
                             echo "📋 Visualizando o deployment atualizado..."
@@ -114,12 +114,13 @@ pipeline {
                         bat 'kubectl get pods -l app=backend-app -o wide'
                         bat 'kubectl get services'
                         
-                        // Verifica se os pods estão running
-                        def frontendPods = bat(script: 'kubectl get pods -l app=frontend-app --no-headers | findstr Running | wc -l', returnStdout: true).trim()
-                        def backendPods = bat(script: 'kubectl get pods -l app=backend-app --no-headers | findstr Running | wc -l', returnStdout: true).trim()
-                        
-                        echo "✅ Pods Frontend Running: ${frontendPods}"
-                        echo "✅ Pods Backend Running: ${backendPods}"
+                        // Verifica se os pods estão running (usando findstr do Windows)
+                        try {
+                            bat 'kubectl get pods -l app=frontend-app --no-headers'
+                            bat 'kubectl get pods -l app=backend-app --no-headers'
+                        } catch (Exception e) {
+                            echo "⚠️ Erro ao verificar status dos pods: ${e.getMessage()}"
+                        }
                         
                         // Mostra logs recentes em caso de problemas
                         echo "📋 Logs recentes do Frontend:"
@@ -141,8 +142,8 @@ pipeline {
             script {
                 try {
                     bat """
-                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-frontend:${BUILD_TAG}', 'meu-frontend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
-                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}', 'meu-backend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
+                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-frontend:${BUILD_TAG}', 'gasparottoluo/meu-frontend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
+                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}', 'gasparottoluo/meu-backend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
                     """
                     echo "🧹 Deployment.yaml restaurado para o estado original"
                 } catch (Exception e) {
@@ -160,7 +161,8 @@ pipeline {
             // Envia notificação de sucesso (opcional)
             script {
                 try {
-                    bat 'kubectl get pods -l app=frontend-app,app=backend-app'
+                    bat 'kubectl get pods -l app=frontend-app'
+                    bat 'kubectl get pods -l app=backend-app'
                 } catch (Exception e) {
                     echo "ℹ️ Status final dos pods não disponível"
                 }
@@ -175,7 +177,8 @@ pipeline {
                     echo "🔍 Informações de debug da falha:"
                     bat 'kubectl describe pods -l app=frontend-app || echo "Erro ao descrever pods frontend"'
                     bat 'kubectl describe pods -l app=backend-app || echo "Erro ao descrever pods backend"'
-                    bat 'kubectl get events --sort-by=.metadata.creationTimestamp | tail -10 || echo "Erro ao obter eventos"'
+                    // Usar PowerShell para obter eventos recentes (tail não existe no Windows)
+                    bat 'powershell -Command "kubectl get events --sort-by=.metadata.creationTimestamp | Select-Object -Last 10" || echo "Erro ao obter eventos"'
                 } catch (Exception e) {
                     echo "⚠️ Não foi possível obter informações de debug: ${e.getMessage()}"
                 }
