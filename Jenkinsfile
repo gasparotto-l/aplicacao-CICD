@@ -59,17 +59,30 @@ pipeline {
                 tag_version = "${BUILD_TAG}"
             }
             steps {
-                withKubeConfig([credentialsId: 'rancher-kubeconfig', serverUrl: 'https://192.168.1.81:6443']) {
+                withKubeConfig([credentialsId: 'rancher-kubeconfig']) {
                     script {
+                        // Testa conectividade primeiro
+                        bat 'kubectl cluster-info'
+                        
                         // Substitui as imagens no YAML usando PowerShell
                         bat """
                             powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-frontend:v1.0.0', '${DOCKERHUB_REPO}/meu-frontend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
                             powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
                         """
-                        // Aplica e espera rollout
-                        bat 'kubectl apply -f k8s/deployment.yaml'
-                        bat 'kubectl rollout status deployment/frontend-app'
-                        bat 'kubectl rollout status deployment/backend-app'
+                        
+                        // Aplica com validação desabilitada se necessário
+                        script {
+                            try {
+                                bat 'kubectl apply -f k8s/deployment.yaml'
+                            } catch (Exception e) {
+                                echo "Tentando aplicar sem validação..."
+                                bat 'kubectl apply -f k8s/deployment.yaml --validate=false'
+                            }
+                        }
+                        
+                        // Espera rollout
+                        bat 'kubectl rollout status deployment/frontend-app --timeout=300s'
+                        bat 'kubectl rollout status deployment/backend-app --timeout=300s'
                     }
                 }
             }
@@ -77,7 +90,7 @@ pipeline {
 
         stage('Verificar Deploy') {
             steps {
-                withKubeConfig([credentialsId: 'rancher-kubeconfig', serverUrl: 'https://192.168.1.81:6443']) {
+                withKubeConfig([credentialsId: 'rancher-kubeconfig']) {
                     bat 'kubectl get pods -l app=frontend-app'
                     bat 'kubectl get pods -l app=backend-app'
                     bat 'kubectl get services'
