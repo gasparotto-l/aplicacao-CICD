@@ -1,4 +1,4 @@
-version: "3.8"  # ✅ Versão explícita recomendada
+version: "3.8"  
 
 services:
   frontend:
@@ -12,7 +12,7 @@ services:
     networks:
       - app-network
     depends_on:
-      - backend  # ✅ Garante que o backend suba antes (caso necessário)
+      - backend  
 
   backend:
     build:
