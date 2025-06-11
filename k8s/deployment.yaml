@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: frontend-app
-        image: meu-frontend:v1.0.0
+        image: gasparottoluo/meu-frontend:v1.0.0  # ✅ CORRIGIDO: usar username do Docker Hub
         ports:
         - containerPort: 3000
         imagePullPolicy: Always
@@ -53,7 +53,7 @@ spec:
     spec:
       containers:
       - name: backend-app
-        image: meu-backend:v1.0.0
+        image: gasparottoluo/meu-backend:v1.0.0   # ✅ CORRIGIDO: usar username do Docker Hub
         ports:
         - containerPort: 8000
         imagePullPolicy: Always

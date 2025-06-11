@@ -6,7 +6,7 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_REPO = "gasparotto-l"        // ✅ Altere para seu usuário real no DockerHub
+        DOCKERHUB_REPO = "gasparottoluo"       // ✅ CORRIGIDO: usar o username do Docker Hub (não GitHub)
         BUILD_TAG = "${env.BUILD_ID}"          // Jenkins Build ID como versão
     }
 
@@ -62,44 +62,4 @@ pipeline {
                         // Substitui as imagens no YAML
                         sh """
                             sed -i 's|meu-frontend:v1.0.0|${DOCKERHUB_REPO}/meu-frontend:${tag_version}|g' ./k8s/deployment.yaml
-                            sed -i 's|meu-backend:v1.0.0|${DOCKERHUB_REPO}/meu-backend:${tag_version}|g' ./k8s/deployment.yaml
-                        """
-                        // Aplica e espera rollout
-                        sh 'kubectl apply -f k8s/deployment.yaml'
-                        sh 'kubectl rollout status deployment/frontend-app'
-                        sh 'kubectl rollout status deployment/backend-app'
-                    }
-                }
-            }
-        }
-
-        stage('Verificar Deploy') {
-            steps {
-                withKubeConfig([credentialsId: 'rancher-kubeconfig', serverUrl: 'https://192.168.1.81:6443']) {
-                    sh 'kubectl get pods -l app=frontend-app'
-                    sh 'kubectl get pods -l app=backend-app'
-                    sh 'kubectl get services'
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            chuckNorris()
-        }
-        success {
-            echo '🚀 Deploy realizado com sucesso!'
-            echo '✅ Frontend: ' + "${DOCKERHUB_REPO}/meu-frontend:${BUILD_TAG}"
-            echo '✅ Backend: ' + "${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}"
-            echo '🌐 Frontend disponível em: http://localhost:30000'
-            echo '🔧 Backend disponível em: http://localhost:30081'
-        }
-        failure {
-            echo '❌ Build falhou!'
-        }
-        unstable {
-            echo '⚠️ Build instável!'
-        }
-    }
-}
+                            sed -i 's|meu-backend:v1.0.0|${DOCKERHUB_REPO}/meu-backend:${tag_
