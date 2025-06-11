@@ -1,18 +1,30 @@
-# Dockerfile Backend (salvar como Dockerfile na pasta backend)
-FROM python:3.13
+# Usa imagem oficial do Python 3.13
+FROM python:3.13-slim
+
+# Define diretório de trabalho
 WORKDIR /app
 
-# Copia apenas o requirements.txt primeiro para aproveitar cache
+# Define variável de ambiente para evitar criação de arquivos .pyc
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Instala dependências do sistema (caso precise compilar algo do requirements)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copia apenas o arquivo de dependências para aproveitar cache
 COPY requirements.txt .
 
-# Instala dependências
-RUN pip install --no-cache-dir -r requirements.txt
+# Instala dependências do Python
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copia o resto dos arquivos
+# Copia o restante dos arquivos
 COPY . .
 
-# Expõe a porta
+# Expõe a porta que o Uvicorn usará
 EXPOSE 8000
 
-# Comando para rodar
+# Comando para iniciar o app
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
