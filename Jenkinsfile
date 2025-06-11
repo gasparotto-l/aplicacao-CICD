@@ -6,8 +6,8 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB_REPO = "gasparottoluo"       // ✅ CORRIGIDO: usar o username do Docker Hub (não GitHub)
-        BUILD_TAG = "${env.BUILD_ID}"          // Jenkins Build ID como versão
+        DOCKERHUB_REPO = "gasparottoluo"
+        BUILD_TAG = "${env.BUILD_ID}"
     }
 
     stages {
@@ -61,28 +61,44 @@ pipeline {
             steps {
                 withKubeConfig([credentialsId: 'rancher-kubeconfig']) {
                     script {
-                        // Testa conectividade primeiro
-                        bat 'kubectl cluster-info'
-                        
-                        // Substitui as imagens no YAML usando PowerShell
-                        bat """
-                            powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-frontend:v1.0.0', '${DOCKERHUB_REPO}/meu-frontend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
-                            powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
-                        """
-                        
-                        // Aplica com validação desabilitada se necessário
-                        script {
+                        try {
+                            echo "🔍 Testando conectividade com o cluster..."
+                            bat 'kubectl cluster-info'
+                            
+                            echo "🔄 Atualizando tags das imagens no deployment..."
+                            // Substitui as imagens no YAML usando PowerShell
+                            bat """
+                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-frontend:v1.0.0', '${DOCKERHUB_REPO}/meu-frontend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
+                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
+                            """
+                            
+                            echo "📋 Visualizando o deployment atualizado..."
+                            bat 'type k8s\\deployment.yaml'
+                            
+                            echo "🚀 Aplicando deployment no Kubernetes..."
+                            // Tenta aplicar com validação primeiro
                             try {
                                 bat 'kubectl apply -f k8s/deployment.yaml'
                             } catch (Exception e) {
-                                echo "Tentando aplicar sem validação..."
+                                echo "⚠️ Falha na validação, tentando sem validação..."
                                 bat 'kubectl apply -f k8s/deployment.yaml --validate=false'
                             }
+                            
+                            echo "⏳ Aguardando rollout dos deployments..."
+                            bat 'kubectl rollout status deployment/frontend-app --timeout=300s'
+                            bat 'kubectl rollout status deployment/backend-app --timeout=300s'
+                            
+                        } catch (Exception e) {
+                            echo "❌ Erro durante o deploy: ${e.getMessage()}"
+                            
+                            // Debug adicional em caso de erro
+                            echo "🔍 Informações de debug:"
+                            bat 'kubectl config current-context || echo "Erro ao obter contexto"'
+                            bat 'kubectl get nodes || echo "Erro ao listar nodes"'
+                            bat 'kubectl get namespaces || echo "Erro ao listar namespaces"'
+                            
+                            throw e
                         }
-                        
-                        // Espera rollout
-                        bat 'kubectl rollout status deployment/frontend-app --timeout=300s'
-                        bat 'kubectl rollout status deployment/backend-app --timeout=300s'
                     }
                 }
             }
@@ -91,9 +107,27 @@ pipeline {
         stage('Verificar Deploy') {
             steps {
                 withKubeConfig([credentialsId: 'rancher-kubeconfig']) {
-                    bat 'kubectl get pods -l app=frontend-app'
-                    bat 'kubectl get pods -l app=backend-app'
-                    bat 'kubectl get services'
+                    script {
+                        echo "🔍 Verificando status dos pods e serviços..."
+                        
+                        bat 'kubectl get pods -l app=frontend-app -o wide'
+                        bat 'kubectl get pods -l app=backend-app -o wide'
+                        bat 'kubectl get services'
+                        
+                        // Verifica se os pods estão running
+                        def frontendPods = bat(script: 'kubectl get pods -l app=frontend-app --no-headers | findstr Running | wc -l', returnStdout: true).trim()
+                        def backendPods = bat(script: 'kubectl get pods -l app=backend-app --no-headers | findstr Running | wc -l', returnStdout: true).trim()
+                        
+                        echo "✅ Pods Frontend Running: ${frontendPods}"
+                        echo "✅ Pods Backend Running: ${backendPods}"
+                        
+                        // Mostra logs recentes em caso de problemas
+                        echo "📋 Logs recentes do Frontend:"
+                        bat 'kubectl logs -l app=frontend-app --tail=10 || echo "Sem logs disponíveis"'
+                        
+                        echo "📋 Logs recentes do Backend:"  
+                        bat 'kubectl logs -l app=backend-app --tail=10 || echo "Sem logs disponíveis"'
+                    }
                 }
             }
         }
@@ -102,16 +136,50 @@ pipeline {
     post {
         always {
             chuckNorris()
+            
+            // Cleanup: Restaura o deployment.yaml original
+            script {
+                try {
+                    bat """
+                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-frontend:${BUILD_TAG}', 'meu-frontend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
+                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}', 'meu-backend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
+                    """
+                    echo "🧹 Deployment.yaml restaurado para o estado original"
+                } catch (Exception e) {
+                    echo "⚠️ Não foi possível restaurar o deployment.yaml: ${e.getMessage()}"
+                }
+            }
         }
         success {
-            echo '🚀 Deploy realizado com sucesso!'
-            echo '✅ Frontend: ' + "${DOCKERHUB_REPO}/meu-frontend:${BUILD_TAG}"
-            echo '✅ Backend: ' + "${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}"
+            echo '🎉 Deploy realizado com sucesso!'
+            echo "✅ Frontend: ${DOCKERHUB_REPO}/meu-frontend:${BUILD_TAG}"
+            echo "✅ Backend: ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}"
             echo '🌐 Frontend disponível em: http://localhost:30000'
             echo '🔧 Backend disponível em: http://localhost:30081'
+            
+            // Envia notificação de sucesso (opcional)
+            script {
+                try {
+                    bat 'kubectl get pods -l app=frontend-app,app=backend-app'
+                } catch (Exception e) {
+                    echo "ℹ️ Status final dos pods não disponível"
+                }
+            }
         }
         failure {
             echo '❌ Build falhou!'
+            
+            // Debug adicional em caso de falha
+            script {
+                try {
+                    echo "🔍 Informações de debug da falha:"
+                    bat 'kubectl describe pods -l app=frontend-app || echo "Erro ao descrever pods frontend"'
+                    bat 'kubectl describe pods -l app=backend-app || echo "Erro ao descrever pods backend"'
+                    bat 'kubectl get events --sort-by=.metadata.creationTimestamp | tail -10 || echo "Erro ao obter eventos"'
+                } catch (Exception e) {
+                    echo "⚠️ Não foi possível obter informações de debug: ${e.getMessage()}"
+                }
+            }
         }
         unstable {
             echo '⚠️ Build instável!'
