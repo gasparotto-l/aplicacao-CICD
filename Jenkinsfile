@@ -60,6 +60,109 @@ pipeline {
             }
         }
 
+        stage('Security Scan com Trivy') {
+            steps {
+                script {
+                    try {
+                        echo "🔍 Iniciando scanner de vulnerabilidades com Trivy..."
+                        
+                        // Instalar Trivy se não existir
+                        bat '''
+                            where trivy >nul 2>&1 || (
+                                echo "📥 Baixando e instalando Trivy..."
+                                powershell -ExecutionPolicy Bypass -Command "
+                                    $trivyVersion = '0.48.3'
+                                    $url = 'https://github.com/aquasecurity/trivy/releases/download/v' + $trivyVersion + '/trivy_' + $trivyVersion + '_Windows-64bit.zip'
+                                    $output = 'trivy.zip'
+                                    Invoke-WebRequest -Uri $url -OutFile $output
+                                    Expand-Archive $output -DestinationPath '.'
+                                    Remove-Item $output
+                                "
+                            )
+                        '''
+                        
+                        // Executar scan da imagem
+                        bat """
+                            echo "🔎 Executando scan de vulnerabilidades..."
+                            .\\trivy.exe image --format json --output trivy-report.json ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG} || echo "Scan completado com warnings"
+                            .\\trivy.exe image --format table ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG} || echo "Report em formato tabela gerado"
+                        """
+                        
+                        // Verificar se há vulnerabilidades críticas
+                        def criticalVulns = 0
+                        def highVulns = 0
+                        
+                        try {
+                            if (fileExists('trivy-report.json')) {
+                                def report = readJSON file: 'trivy-report.json'
+                                if (report.Results) {
+                                    report.Results.each { result ->
+                                        if (result.Vulnerabilities) {
+                                            result.Vulnerabilities.each { vuln ->
+                                                if (vuln.Severity == 'CRITICAL') criticalVulns++
+                                                if (vuln.Severity == 'HIGH') highVulns++
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            echo "⚠️ Erro ao processar relatório JSON: ${e.getMessage()}"
+                        }
+                        
+                        def scanColor = 3066993 // Verde padrão
+                        def scanStatus = "✅ Sem vulnerabilidades críticas"
+                        
+                        if (criticalVulns > 0) {
+                            scanColor = 15158332 // Vermelho
+                            scanStatus = "🚨 ${criticalVulns} vulnerabilidade(s) CRÍTICA(S) encontrada(s)"
+                        } else if (highVulns > 0) {
+                            scanColor = 16776960 // Amarelo
+                            scanStatus = "⚠️ ${highVulns} vulnerabilidade(s) ALTA(S) encontrada(s)"
+                        }
+                        
+                        sendDiscordNotification(
+                            webhookUrl: env.DISCORD_WEBHOOK_URL,
+                            title: "🛡️ Scanner de Segurança Concluído",
+                            description: scanStatus,
+                            color: scanColor,
+                            fields: [
+                                [name: "Imagem Analisada", value: "${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}", inline: false],
+                                [name: "Vulnerabilidades Críticas", value: "${criticalVulns}", inline: true],
+                                [name: "Vulnerabilidades Altas", value: "${highVulns}", inline: true]
+                            ]
+                        )
+                        
+                        // Opcional: Falhar o build se houver vulnerabilidades críticas
+                        // Descomente a linha abaixo se quiser que o pipeline falhe com vulnerabilidades críticas
+                        // if (criticalVulns > 0) error("Pipeline interrompido devido a vulnerabilidades críticas")
+                        
+                    } catch (Exception e) {
+                        echo "⚠️ Erro durante o scanner de segurança: ${e.getMessage()}"
+                        
+                        sendDiscordNotification(
+                            webhookUrl: env.DISCORD_WEBHOOK_URL,
+                            title: "⚠️ Erro no Scanner de Segurança",
+                            description: "Não foi possível executar o scanner Trivy",
+                            color: 16776960, // Amarelo
+                            fields: [
+                                [name: "Erro", value: e.getMessage(), inline: false]
+                            ]
+                        )
+                        
+                        // Não falhar o pipeline por erro no scanner
+                        echo "🔄 Continuando pipeline apesar do erro no scanner..."
+                    }
+                }
+            }
+            post {
+                always {
+                    // Arquivar relatório se existir
+                    archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true, fingerprint: true
+                }
+            }
+        }
+
         stage('Deploy no Kubernetes') {
             environment {
                 tag_version = "${BUILD_TAG}"
@@ -142,6 +245,14 @@ pipeline {
                     echo "🧹 Deployment.yaml restaurado para o estado original"
                 } catch (Exception e) {
                     echo "⚠️ Não foi possível restaurar o deployment.yaml: ${e.getMessage()}"
+                }
+                
+                // Limpeza dos arquivos do Trivy
+                try {
+                    bat 'del /f /q trivy.exe 2>nul || echo "Trivy já removido"'
+                    bat 'del /f /q trivy-report.json 2>nul || echo "Relatório já removido"'
+                } catch (Exception e) {
+                    echo "ℹ️ Limpeza do Trivy: ${e.getMessage()}"
                 }
             }
         }
