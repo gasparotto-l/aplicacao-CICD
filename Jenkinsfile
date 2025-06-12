@@ -8,9 +8,29 @@ pipeline {
     environment {
         DOCKERHUB_REPO = "gasparottoluo"
         BUILD_TAG = "${env.BUILD_ID}"
+        // Coloque aqui a URL do seu webhook do Discord
+        DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1382830151179571310/OSxxhsPFHYuo--aJP9LhOQrzJsCFwwmVxj7CZXH0Qycrv9ZpkUvIwzWqsxd7lYorD-0H"
     }
 
     stages {
+        stage('Notificar Início') {
+            steps {
+                script {
+                    sendDiscordNotification(
+                        webhookUrl: env.DISCORD_WEBHOOK_URL,
+                        title: "🚀 Deploy Iniciado",
+                        description: "Iniciando build e deploy do backend",
+                        color: 3447003, // Azul
+                        fields: [
+                            [name: "Build", value: "#${env.BUILD_ID}", inline: true],
+                            [name: "Branch", value: "${env.GIT_BRANCH ?: 'main'}", inline: true],
+                            [name: "Commit", value: "${env.GIT_COMMIT?.take(7) ?: 'N/A'}", inline: true]
+                        ]
+                    )
+                }
+            }
+        }
+
         stage('Build Backend Docker Image') {
             steps {
                 script {
@@ -27,6 +47,16 @@ pipeline {
                         backendapp.push('latest')
                         backendapp.push("${BUILD_TAG}")
                     }
+                    
+                    sendDiscordNotification(
+                        webhookUrl: env.DISCORD_WEBHOOK_URL,
+                        title: "📦 Imagem Docker Criada",
+                        description: "Imagem Docker enviada para o DockerHub com sucesso",
+                        color: 3066993, // Verde
+                        fields: [
+                            [name: "Imagem", value: "${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}", inline: false]
+                        ]
+                    )
                 }
             }
         }
@@ -124,6 +154,19 @@ pipeline {
             script {
                 try {
                     bat 'kubectl get pods -l app=backend-app'
+                    
+                    sendDiscordNotification(
+                        webhookUrl: env.DISCORD_WEBHOOK_URL,
+                        title: "✅ Deploy Concluído com Sucesso!",
+                        description: "O backend foi deployado com sucesso no Kubernetes",
+                        color: 3066993, // Verde
+                        fields: [
+                            [name: "Build", value: "#${env.BUILD_ID}", inline: true],
+                            [name: "Imagem", value: "${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}", inline: false],
+                            [name: "URL", value: "http://localhost:30081", inline: true],
+                            [name: "Duração", value: "${currentBuild.durationString}", inline: true]
+                        ]
+                    )
                 } catch (Exception e) {
                     echo "ℹ️ Status final dos pods não disponível"
                 }
@@ -137,6 +180,18 @@ pipeline {
                     echo "🔍 Informações de debug da falha:"
                     bat 'kubectl describe pods -l app=backend-app || echo "Erro ao descrever pods backend"'
                     bat 'powershell -Command "kubectl get events --sort-by=.metadata.creationTimestamp | Select-Object -Last 10" || echo "Erro ao obter eventos"'
+                    
+                    sendDiscordNotification(
+                        webhookUrl: env.DISCORD_WEBHOOK_URL,
+                        title: "❌ Deploy Falhou!",
+                        description: "Ocorreu um erro durante o processo de build/deploy",
+                        color: 15158332, // Vermelho
+                        fields: [
+                            [name: "Build", value: "#${env.BUILD_ID}", inline: true],
+                            [name: "Erro", value: "Verifique os logs do Jenkins para mais detalhes", inline: false],
+                            [name: "Duração", value: "${currentBuild.durationString}", inline: true]
+                        ]
+                    )
                 } catch (Exception e) {
                     echo "⚠️ Não foi possível obter informações de debug: ${e.getMessage()}"
                 }
@@ -144,6 +199,56 @@ pipeline {
         }
         unstable {
             echo '⚠️ Build instável!'
+            
+            script {
+                sendDiscordNotification(
+                    webhookUrl: env.DISCORD_WEBHOOK_URL,
+                    title: "⚠️ Build Instável",
+                    description: "O build foi concluído, mas com alguns problemas",
+                    color: 16776960, // Amarelo
+                    fields: [
+                        [name: "Build", value: "#${env.BUILD_ID}", inline: true],
+                        [name: "Status", value: "Instável - Requer atenção", inline: false]
+                    ]
+                )
+            }
         }
+    }
+}
+
+// Função para enviar notificações para o Discord
+def sendDiscordNotification(Map config) {
+    def payload = [
+        embeds: [[
+            title: config.title,
+            description: config.description,
+            color: config.color,
+            fields: config.fields ?: [],
+            timestamp: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"),
+            footer: [
+                text: "Jenkins CI/CD",
+                icon_url: "https://www.jenkins.io/images/logos/jenkins/jenkins.png"
+            ],
+            author: [
+                name: "Jenkins Pipeline",
+                url: "${env.BUILD_URL}",
+                icon_url: "https://www.jenkins.io/images/logos/jenkins/jenkins.png"
+            ]
+        ]]
+    ]
+    
+    def jsonPayload = groovy.json.JsonOutput.toJson(payload)
+    
+    try {
+        httpRequest(
+            httpMode: 'POST',
+            url: config.webhookUrl,
+            contentType: 'APPLICATION_JSON',
+            requestBody: jsonPayload,
+            validResponseCodes: '200:299'
+        )
+        echo "✅ Notificação Discord enviada com sucesso"
+    } catch (Exception e) {
+        echo "⚠️ Falha ao enviar notificação Discord: ${e.getMessage()}"
     }
 }
