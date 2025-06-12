@@ -8,7 +8,6 @@ pipeline {
     environment {
         DOCKERHUB_REPO = "gasparottoluo"
         BUILD_TAG = "${env.BUILD_ID}"
-        // Coloque aqui a URL do seu webhook do Discord
         DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1382830151179571310/OSxxhsPFHYuo--aJP9LhOQrzJsCFwwmVxj7CZXH0Qycrv9ZpkUvIwzWqsxd7lYorD-0H"
     }
 
