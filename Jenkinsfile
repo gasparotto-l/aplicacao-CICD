@@ -36,6 +36,8 @@ pipeline {
                             --format json ^
                             --output /reports/trivy-report.json ^
                             --severity HIGH,CRITICAL ^
+                            --skip-db-update ^
+                            --timeout 5m ^
                             ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
                         """
                         
@@ -47,6 +49,8 @@ pipeline {
                             --format table ^
                             --output /reports/trivy-report.txt ^
                             --severity HIGH,CRITICAL ^
+                            --skip-db-update ^
+                            --timeout 5m ^
                             ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
                         """
                         
@@ -73,21 +77,41 @@ pipeline {
                         def jsonReport = readFile('trivy-reports/trivy-report.json')
                         
                         // Parse básico para contar vulnerabilidades críticas
-                        def criticalCount = bat(
-                            script: '''
-                                powershell -Command "
-                                $json = Get-Content 'trivy-reports/trivy-report.json' | ConvertFrom-Json;
-                                $critical = 0;
-                                foreach($result in $json.Results) {
-                                    if($result.Vulnerabilities) {
-                                        $critical += ($result.Vulnerabilities | Where-Object {$_.Severity -eq 'CRITICAL'}).Count
-                                    }
-                                };
-                                Write-Output $critical
-                                "
-                            ''',
-                            returnStdout: true
-                        ).trim() as Integer
+                        def criticalCount = 0
+                        try {
+                            def countResult = bat(
+                                script: '''
+                                    powershell -Command "& {
+                                        $ErrorActionPreference = 'Stop';
+                                        $json = Get-Content 'trivy-reports/trivy-report.json' -Raw | ConvertFrom-Json;
+                                        $critical = 0;
+                                        if ($json.Results) {
+                                            foreach($result in $json.Results) {
+                                                if($result.Vulnerabilities) {
+                                                    $critical += ($result.Vulnerabilities | Where-Object {$_.Severity -eq 'CRITICAL'}).Count
+                                                }
+                                            }
+                                        }
+                                        Write-Output $critical
+                                    }"
+                                ''',
+                                returnStdout: true
+                            ).trim()
+                            criticalCount = countResult as Integer
+                        } catch (Exception e) {
+                            echo "⚠️ Erro ao processar JSON: ${e.getMessage()}"
+                            // Fallback: contar vulnerabilidades via grep/findstr
+                            try {
+                                def grepResult = bat(
+                                    script: 'findstr /C:"CRITICAL" trivy-reports\\trivy-report.txt | find /C /V ""',
+                                    returnStdout: true
+                                ).trim()
+                                criticalCount = grepResult as Integer
+                            } catch (Exception e2) {
+                                echo "⚠️ Fallback também falhou: ${e2.getMessage()}"
+                                criticalCount = 0
+                            }
+                        }
                         
                         echo "🔍 Vulnerabilidades CRÍTICAS encontradas: ${criticalCount}"
                         
