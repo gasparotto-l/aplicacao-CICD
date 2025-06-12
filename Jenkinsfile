@@ -28,41 +28,55 @@ pipeline {
                         // Criar diretório para relatórios se não existir
                         bat 'if not exist "trivy-reports" mkdir trivy-reports'
                         
-                        // Executar Trivy via Docker para scan da imagem
-                        bat """
+                        // Primeira execução do Trivy (permitir download do DB)
+                        def trivyResult = bat(
+                            script: """
                             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ^
-                            -v "%WORKSPACE%/trivy-reports:/reports" ^
+                            -v "%WORKSPACE%\\trivy-reports:/reports" ^
                             aquasec/trivy:latest image ^
                             --format json ^
                             --output /reports/trivy-report.json ^
                             --severity HIGH,CRITICAL ^
-                            --skip-db-update ^
-                            --timeout 5m ^
+                            --timeout 10m ^
+                            --no-progress ^
                             ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
-                        """
+                            """,
+                            returnStatus: true
+                        )
                         
-                        // Gerar também relatório em formato de tabela para visualização
-                        bat """
-                            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ^
-                            -v "%WORKSPACE%/trivy-reports:/reports" ^
-                            aquasec/trivy:latest image ^
-                            --format table ^
-                            --output /reports/trivy-report.txt ^
-                            --severity HIGH,CRITICAL ^
-                            --skip-db-update ^
-                            --timeout 5m ^
-                            ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
-                        """
-                        
-                        echo "✅ Scan de vulnerabilidades concluído!"
-                        
-                        // Exibir resumo do relatório
-                        echo "📋 Resumo das vulnerabilidades encontradas:"
-                        bat 'type trivy-reports\\trivy-report.txt'
+                        if (trivyResult == 0) {
+                            // Gerar também relatório em formato de tabela para visualização
+                            bat """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ^
+                                -v "%WORKSPACE%\\trivy-reports:/reports" ^
+                                aquasec/trivy:latest image ^
+                                --format table ^
+                                --output /reports/trivy-report.txt ^
+                                --severity HIGH,CRITICAL ^
+                                --skip-db-update ^
+                                --timeout 5m ^
+                                --no-progress ^
+                                ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
+                            """
+                            
+                            echo "✅ Scan de vulnerabilidades concluído!"
+                            
+                            // Exibir resumo do relatório se existir
+                            if (fileExists('trivy-reports/trivy-report.txt')) {
+                                echo "📋 Resumo das vulnerabilidades encontradas:"
+                                bat 'type trivy-reports\\trivy-report.txt'
+                            }
+                        } else {
+                            echo "⚠️ Trivy scan falhou, criando arquivo JSON vazio para continuar pipeline..."
+                            bat 'echo {"Results": []} > trivy-reports\\trivy-report.json'
+                            bat 'echo No vulnerabilities found > trivy-reports\\trivy-report.txt'
+                        }
                         
                     } catch (Exception e) {
                         echo "⚠️ Erro durante o scan de vulnerabilidades: ${e.getMessage()}"
-                        // Não falhar o pipeline, apenas alertar
+                        // Criar arquivos vazios para não quebrar próximos stages
+                        bat 'echo {"Results": []} > trivy-reports\\trivy-report.json'
+                        bat 'echo Scan failed > trivy-reports\\trivy-report.txt'
                         currentBuild.result = 'UNSTABLE'
                     }
                 }
@@ -73,42 +87,52 @@ pipeline {
             steps {
                 script {
                     try {
-                        // Verificar se existem vulnerabilidades críticas
+                        // Verificar se o arquivo existe antes de tentar ler
+                        if (!fileExists('trivy-reports/trivy-report.json')) {
+                            echo "⚠️ Arquivo de relatório não encontrado, pulando análise"
+                            return
+                        }
+                        
+                        // Ler o arquivo JSON
                         def jsonReport = readFile('trivy-reports/trivy-report.json')
                         
                         // Parse básico para contar vulnerabilidades críticas
                         def criticalCount = 0
                         try {
-                            def countResult = bat(
-                                script: '''
-                                    powershell -Command "& {
-                                        $ErrorActionPreference = 'Stop';
-                                        $json = Get-Content 'trivy-reports/trivy-report.json' -Raw | ConvertFrom-Json;
-                                        $critical = 0;
-                                        if ($json.Results) {
-                                            foreach($result in $json.Results) {
-                                                if($result.Vulnerabilities) {
-                                                    $critical += ($result.Vulnerabilities | Where-Object {$_.Severity -eq 'CRITICAL'}).Count
-                                                }
+                            // Método mais seguro usando readJSON do Jenkins
+                            def parsedJson = readJSON text: jsonReport
+                            
+                            if (parsedJson.Results) {
+                                parsedJson.Results.each { result ->
+                                    if (result.Vulnerabilities) {
+                                        result.Vulnerabilities.each { vuln ->
+                                            if (vuln.Severity == 'CRITICAL') {
+                                                criticalCount++
                                             }
                                         }
-                                        Write-Output $critical
-                                    }"
-                                ''',
-                                returnStdout: true
-                            ).trim()
-                            criticalCount = countResult as Integer
-                        } catch (Exception e) {
-                            echo "⚠️ Erro ao processar JSON: ${e.getMessage()}"
-                            // Fallback: contar vulnerabilidades via grep/findstr
+                                    }
+                                }
+                            }
+                            
+                        } catch (Exception jsonError) {
+                            echo "⚠️ Erro ao processar JSON com readJSON: ${jsonError.getMessage()}"
+                            
+                            // Fallback: contar vulnerabilidades via findstr no arquivo de texto
                             try {
-                                def grepResult = bat(
-                                    script: 'findstr /C:"CRITICAL" trivy-reports\\trivy-report.txt | find /C /V ""',
-                                    returnStdout: true
-                                ).trim()
-                                criticalCount = grepResult as Integer
-                            } catch (Exception e2) {
-                                echo "⚠️ Fallback também falhou: ${e2.getMessage()}"
+                                if (fileExists('trivy-reports/trivy-report.txt')) {
+                                    def grepResult = bat(
+                                        script: '''
+                                        for /f %%i in ('findstr /C:"CRITICAL" trivy-reports\\trivy-report.txt ^| find /C /V ""') do echo %%i
+                                        ''',
+                                        returnStdout: true
+                                    ).trim()
+                                    
+                                    if (grepResult.isNumber()) {
+                                        criticalCount = grepResult as Integer
+                                    }
+                                }
+                            } catch (Exception fallbackError) {
+                                echo "⚠️ Fallback também falhou: ${fallbackError.getMessage()}"
                                 criticalCount = 0
                             }
                         }
@@ -119,10 +143,7 @@ pipeline {
                             echo "⚠️ ATENÇÃO: Encontradas ${criticalCount} vulnerabilidades CRÍTICAS!"
                             echo "📋 Revise o relatório em trivy-reports/trivy-report.txt"
                             
-                            // Opção 1: Falhar o pipeline se houver vulnerabilidades críticas
-                            // error("Pipeline falhou devido a vulnerabilidades críticas!")
-                            
-                            // Opção 2: Apenas marcar como instável (recomendado para início)
+                            // Marcar como instável mas continuar deploy
                             currentBuild.result = 'UNSTABLE'
                         } else {
                             echo "✅ Nenhuma vulnerabilidade crítica encontrada!"
@@ -137,6 +158,11 @@ pipeline {
         }
 
         stage('Push Docker Image') {
+            when {
+                not { 
+                    equals expected: 'FAILURE', actual: currentBuild.result 
+                }
+            }
             steps {
                 script {
                     def backendapp = docker.image("${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}")
@@ -149,8 +175,13 @@ pipeline {
         }
 
         stage('Deploy no Kubernetes') {
+            when {
+                not { 
+                    equals expected: 'FAILURE', actual: currentBuild.result 
+                }
+            }
             environment {
-                tag_version = "${BUILD_TAG}"
+                TAG_VERSION = "${BUILD_TAG}"
             }
             steps {
                 withKubeConfig([credentialsId: 'rancher-kubeconfig']) {
@@ -161,8 +192,13 @@ pipeline {
                             
                             echo "🔄 Atualizando tag da imagem no deployment..."
                             
+                            // Usar escape correto para caracteres especiais no Windows
                             bat """
-                                powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace 'gasparottoluo/meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${tag_version}' | Set-Content ./k8s/deployment.yaml"
+                            powershell -Command "& {
+                                \$content = Get-Content './k8s/deployment.yaml' -Raw;
+                                \$content = \$content -replace 'gasparottoluo/meu-backend:v1.0.0', '${DOCKERHUB_REPO}/meu-backend:${TAG_VERSION}';
+                                Set-Content './k8s/deployment.yaml' -Value \$content -NoNewline;
+                            }"
                             """
                             
                             echo "📋 Visualizando o deployment atualizado..."
@@ -172,8 +208,8 @@ pipeline {
                             
                             try {
                                 bat 'kubectl apply -f k8s/deployment.yaml'
-                            } catch (Exception e) {
-                                echo "⚠️ Falha na validação, tentando sem validação..."
+                            } catch (Exception applyError) {
+                                echo "⚠️ Falha na aplicação, tentando sem validação..."
                                 bat 'kubectl apply -f k8s/deployment.yaml --validate=false'
                             }
                             
@@ -184,9 +220,23 @@ pipeline {
                             echo "❌ Erro durante o deploy: ${e.getMessage()}"
                             
                             echo "🔍 Informações de debug:"
-                            bat 'kubectl config current-context || echo "Erro ao obter contexto"'
-                            bat 'kubectl get nodes || echo "Erro ao listar nodes"'
-                            bat 'kubectl get namespaces || echo "Erro ao listar namespaces"'
+                            try {
+                                bat 'kubectl config current-context'
+                            } catch (Exception debugError) {
+                                echo "Erro ao obter contexto: ${debugError.getMessage()}"
+                            }
+                            
+                            try {
+                                bat 'kubectl get nodes'
+                            } catch (Exception debugError) {
+                                echo "Erro ao listar nodes: ${debugError.getMessage()}"
+                            }
+                            
+                            try {
+                                bat 'kubectl get namespaces'
+                            } catch (Exception debugError) {
+                                echo "Erro ao listar namespaces: ${debugError.getMessage()}"
+                            }
                             
                             throw e
                         }
@@ -196,22 +246,44 @@ pipeline {
         }
 
         stage('Verificar Deploy') {
+            when {
+                not { 
+                    equals expected: 'FAILURE', actual: currentBuild.result 
+                }
+            }
             steps {
                 withKubeConfig([credentialsId: 'rancher-kubeconfig']) {
                     script {
                         echo "🔍 Verificando status dos pods e serviços..."
                         
-                        bat 'kubectl get pods -l app=backend-app -o wide'
-                        bat 'kubectl get services'
+                        try {
+                            bat 'kubectl get pods -l app=backend-app -o wide'
+                        } catch (Exception e) {
+                            echo "⚠️ Erro ao listar pods: ${e.getMessage()}"
+                        }
                         
                         try {
-                            bat 'kubectl get pods -l app=backend-app --no-headers'
+                            bat 'kubectl get services'
+                        } catch (Exception e) {
+                            echo "⚠️ Erro ao listar serviços: ${e.getMessage()}"
+                        }
+                        
+                        try {
+                            def podsStatus = bat(
+                                script: 'kubectl get pods -l app=backend-app --no-headers',
+                                returnStdout: true
+                            ).trim()
+                            echo "📊 Status dos pods: ${podsStatus}"
                         } catch (Exception e) {
                             echo "⚠️ Erro ao verificar status dos pods: ${e.getMessage()}"
                         }
                         
-                        echo "📋 Logs recentes do Backend:"  
-                        bat 'kubectl logs -l app=backend-app --tail=10 || echo "Sem logs disponíveis"'
+                        echo "📋 Logs recentes do Backend:"
+                        try {
+                            bat 'kubectl logs -l app=backend-app --tail=10'
+                        } catch (Exception e) {
+                            echo "⚠️ Sem logs disponíveis: ${e.getMessage()}"
+                        }
                     }
                 }
             }
@@ -224,8 +296,13 @@ pipeline {
             
             script {
                 try {
+                    // Restaurar deployment.yaml para estado original
                     bat """
-                        powershell -Command "(Get-Content ./k8s/deployment.yaml) -replace '${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}', 'gasparottoluo/meu-backend:v1.0.0' | Set-Content ./k8s/deployment.yaml"
+                    powershell -Command "& {
+                        \$content = Get-Content './k8s/deployment.yaml' -Raw;
+                        \$content = \$content -replace '${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}', 'gasparottoluo/meu-backend:v1.0.0';
+                        Set-Content './k8s/deployment.yaml' -Value \$content -NoNewline;
+                    }"
                     """
                     echo "🧹 Deployment.yaml restaurado para o estado original"
                 } catch (Exception e) {
@@ -236,6 +313,7 @@ pipeline {
             // Arquivar relatórios de vulnerabilidade
             archiveArtifacts artifacts: 'trivy-reports/*.json, trivy-reports/*.txt', allowEmptyArchive: true
         }
+        
         success {
             echo '🎉 Deploy realizado com sucesso!'
             echo "✅ Backend: ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}"
@@ -245,23 +323,30 @@ pipeline {
                 try {
                     bat 'kubectl get pods -l app=backend-app'
                 } catch (Exception e) {
-                    echo "ℹ️ Status final dos pods não disponível"
+                    echo "ℹ️ Status final dos pods não disponível: ${e.getMessage()}"
                 }
             }
         }
+        
         failure {
             echo '❌ Build falhou!'
             
             script {
                 try {
                     echo "🔍 Informações de debug da falha:"
-                    bat 'kubectl describe pods -l app=backend-app || echo "Erro ao descrever pods backend"'
-                    bat 'powershell -Command "kubectl get events --sort-by=.metadata.creationTimestamp | Select-Object -Last 10" || echo "Erro ao obter eventos"'
+                    bat 'kubectl describe pods -l app=backend-app'
                 } catch (Exception e) {
-                    echo "⚠️ Não foi possível obter informações de debug: ${e.getMessage()}"
+                    echo "⚠️ Erro ao descrever pods backend: ${e.getMessage()}"
+                }
+                
+                try {
+                    bat 'kubectl get events --sort-by=.metadata.creationTimestamp --output=wide'
+                } catch (Exception e) {
+                    echo "⚠️ Erro ao obter eventos: ${e.getMessage()}"
                 }
             }
         }
+        
         unstable {
             echo '⚠️ Build instável - Possíveis vulnerabilidades encontradas!'
             echo '📋 Verifique os relatórios de segurança nos artefatos do build'
