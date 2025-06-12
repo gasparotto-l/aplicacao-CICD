@@ -66,27 +66,51 @@ pipeline {
                     try {
                         echo "🔍 Iniciando scanner de vulnerabilidades com Trivy..."
                         
-                        // Instalar Trivy se não existir
-                        bat '''
-                            where trivy >nul 2>&1 || (
-                                echo "📥 Baixando e instalando Trivy..."
-                                powershell -ExecutionPolicy Bypass -Command "
-                                    $trivyVersion = '0.48.3'
-                                    $url = 'https://github.com/aquasecurity/trivy/releases/download/v' + $trivyVersion + '/trivy_' + $trivyVersion + '_Windows-64bit.zip'
-                                    $output = 'trivy.zip'
-                                    Invoke-WebRequest -Uri $url -OutFile $output
-                                    Expand-Archive $output -DestinationPath '.'
-                                    Remove-Item $output
-                                "
-                            )
-                        '''
+                        // Verificar se Trivy existe
+                        def trivyExists = false
+                        try {
+                            bat 'where trivy >nul 2>&1'
+                            trivyExists = true
+                            echo "✅ Trivy já está instalado"
+                        } catch (Exception e) {
+                            echo "📥 Trivy não encontrado, fazendo download..."
+                        }
+                        
+                        // Baixar Trivy se não existir
+                        if (!trivyExists) {
+                            bat '''
+                                powershell -ExecutionPolicy Bypass -Command ^
+                                "$trivyVersion = '0.48.3'; ^
+                                $url = 'https://github.com/aquasecurity/trivy/releases/download/v' + $trivyVersion + '/trivy_' + $trivyVersion + '_Windows-64bit.zip'; ^
+                                $output = 'trivy.zip'; ^
+                                Write-Host 'Baixando Trivy...'; ^
+                                Invoke-WebRequest -Uri $url -OutFile $output; ^
+                                Write-Host 'Extraindo arquivo...'; ^
+                                Expand-Archive $output -DestinationPath '.' -Force; ^
+                                Remove-Item $output; ^
+                                Write-Host 'Trivy instalado com sucesso!'"
+                            '''
+                        }
                         
                         // Executar scan da imagem
-                        bat """
-                            echo "🔎 Executando scan de vulnerabilidades..."
-                            .\\trivy.exe image --format json --output trivy-report.json ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG} || echo "Scan completado com warnings"
-                            .\\trivy.exe image --format table ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG} || echo "Report em formato tabela gerado"
-                        """
+                        echo "🔎 Executando scan de vulnerabilidades..."
+                        try {
+                            bat """
+                                trivy.exe image --format json --output trivy-report.json ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
+                            """
+                            echo "✅ Scan JSON concluído"
+                        } catch (Exception e) {
+                            echo "⚠️ Erro no scan JSON: ${e.getMessage()}"
+                        }
+                        
+                        try {
+                            bat """
+                                trivy.exe image --format table ${DOCKERHUB_REPO}/meu-backend:${BUILD_TAG}
+                            """
+                            echo "✅ Scan em tabela concluído"
+                        } catch (Exception e) {
+                            echo "⚠️ Erro no scan tabela: ${e.getMessage()}"
+                        }
                         
                         // Verificar se há vulnerabilidades críticas
                         def criticalVulns = 0
@@ -249,8 +273,9 @@ pipeline {
                 
                 // Limpeza dos arquivos do Trivy
                 try {
-                    bat 'del /f /q trivy.exe 2>nul || echo "Trivy já removido"'
-                    bat 'del /f /q trivy-report.json 2>nul || echo "Relatório já removido"'
+                    bat 'if exist trivy.exe del /f /q trivy.exe'
+                    bat 'if exist trivy-report.json del /f /q trivy-report.json'
+                    echo "🧹 Arquivos do Trivy removidos"
                 } catch (Exception e) {
                     echo "ℹ️ Limpeza do Trivy: ${e.getMessage()}"
                 }
